@@ -3,19 +3,12 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  base: '/PWA_Finance/',
+
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
-      manifest: {
-        name: 'CoVeR PWA',
-        short_name: 'CoVeR',
-        start_url: '/',
-        display: 'standalone',
-        background_color: '#ffffff',
-        theme_color: '#1976d2',
-        icons: []
-      }
+      registerType: 'autoUpdate'
     })
   ]
 })
