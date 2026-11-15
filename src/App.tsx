@@ -186,7 +186,6 @@ function App() {
               <input
                 ref={sqliteInputRef}
                 type='file'
-                accept='.db,.sqlite,.sqlite3,application/x-sqlite3'
                 onChange={handleSqliteFileChange}
                 style={{ display: 'none' }}
               />
@@ -207,6 +206,10 @@ function App() {
             </div>
 
             <p style={{ margin: 0, color: '#444' }}>{dbInfoMessage}</p>
+
+            <p style={{ margin: 0, color: '#666' }}>
+              Selectorul este permisiv ca sa mearga pe toate browserele; validarea SQLite se face dupa selectare.
+            </p>
 
             {dbFileName && (
               <p style={{ margin: 0, color: '#666' }}>
