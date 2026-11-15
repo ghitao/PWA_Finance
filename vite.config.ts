@@ -5,6 +5,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 export default defineConfig({
   base: '/PWA_Finance/',
 
+
   plugins: [
     react(),
     VitePWA({

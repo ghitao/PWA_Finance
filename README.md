@@ -30,3 +30,23 @@ If you are developing a production application, we recommend enabling type-aware
 ```
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+
+## Local SQLite command
+
+This app now includes a UI command to test a local SQLite database directly in the browser.
+
+### Run
+
+```bash
+npm install
+npm run dev
+```
+
+### Try it
+
+1. Open the app in the browser.
+2. Click the vertical menu button (`⋮`) in the top-right corner.
+3. Go to `Comenzi`.
+4. Click `Incarca baza SQLite locala` and select a `.db`, `.sqlite`, or `.sqlite3` file.
+5. The app shows the SQLite version and detected table names.
+
