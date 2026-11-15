@@ -4,6 +4,7 @@ import { inspectLocalSqlite } from './sqlite/localSqlite'
 type MenuItem = 'dashboard' | 'comenzi' | 'tranzactii' | 'setari'
 type SortColumn = 'date' | 'value'
 type SortDirection = 'asc' | 'desc'
+const TRANSACTION_TABLE_HEADERS = ['Date', 'Type', 'For', 'Description', 'Value'] as const
 const DEFAULT_TRANSACTIONS_PAGE_SIZE = 100
 const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat('ro-RO')
 const VALUE_SUM_FORMATTER = new Intl.NumberFormat('ro-RO', {
@@ -766,9 +767,9 @@ function App() {
   }
 
   return (
-    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
+    <div className='finance-app' style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ margin: 0 }}>Finance PWA</h1>
+        <h1 className='finance-title' style={{ margin: 0 }}>Finance PWA</h1>
 
         <div ref={menuContainerRef} style={{ position: 'relative' }}>
           <button
@@ -877,11 +878,12 @@ function App() {
         </div>
       </div>
 
-      <p style={{ color: '#666', marginTop: '12px' }}>
+      <p className='finance-subtitle' style={{ color: '#666', marginTop: '12px' }}>
         Apasa pe meniul cu trei puncte pentru comenzi.
       </p>
 
       <section
+        className='finance-panel'
         style={{
           padding: '16px',
           border: '1px solid #ddd',
@@ -1005,6 +1007,9 @@ function App() {
                     border: '1px solid #ccc',
                     background: isTransactionsLoading ? '#f2f2f2' : '#fff',
                     cursor: isTransactionsLoading ? 'not-allowed' : 'pointer',
+                    color: '#111',
+                    WebkitTextFillColor: '#111',
+                    colorScheme: 'light',
                   }}
                 >
                   <option value='all'>Toate</option>
@@ -1031,6 +1036,9 @@ function App() {
                     border: '1px solid #ccc',
                     background: isTransactionsLoading ? '#f2f2f2' : '#fff',
                     cursor: isTransactionsLoading ? 'not-allowed' : 'pointer',
+                    color: '#111',
+                    WebkitTextFillColor: '#111',
+                    colorScheme: 'light',
                   }}
                 >
                   <option value='all'>Toate</option>
@@ -1057,6 +1065,9 @@ function App() {
                     border: '1px solid #ccc',
                     background: isTransactionsLoading || availableAccounts.length === 0 ? '#f2f2f2' : '#fff',
                     cursor: isTransactionsLoading || availableAccounts.length === 0 ? 'not-allowed' : 'pointer',
+                    color: '#111',
+                    WebkitTextFillColor: '#111',
+                    colorScheme: 'light',
                   }}
                 >
                   <option value='all'>Toate</option>
@@ -1086,6 +1097,9 @@ function App() {
                     border: '1px solid #ccc',
                     background: isTransactionsLoading || availableCategories.length === 0 ? '#f2f2f2' : '#fff',
                     cursor: isTransactionsLoading || availableCategories.length === 0 ? 'not-allowed' : 'pointer',
+                    color: '#111',
+                    WebkitTextFillColor: '#111',
+                    colorScheme: 'light',
                   }}
                 >
                   <option value='all'>Toate</option>
@@ -1311,13 +1325,14 @@ function App() {
             )}
 
             {transactionsRows.length > 0 && (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ borderCollapse: 'collapse', minWidth: '640px', width: '100%' }}>
+              <div className='finance-table-wrap' style={{ overflowX: 'auto' }}>
+                <table className='finance-table' style={{ borderCollapse: 'collapse', minWidth: '640px', width: '100%' }}>
                   <thead>
                     <tr>
-                      {['Date', 'Type', 'For', 'Description', 'Value'].map((columnName) => (
+                      {TRANSACTION_TABLE_HEADERS.map((columnName) => (
                         <th
                           key={columnName}
+                          className='finance-table-th'
                           style={{
                             textAlign: columnName === 'Value' ? 'right' : 'left',
                             borderBottom: '1px solid #ddd',
@@ -1363,10 +1378,12 @@ function App() {
                   </thead>
                   <tbody>
                     {transactionDisplayRows.map((row, rowIndex) => (
-                      <tr key={`txn-${rowIndex}`}>
+                      <tr key={`txn-${rowIndex}`} className='finance-table-row'>
                         {[row.date, row.type, row.for, row.description, row.value].map((cellValue, cellIndex) => (
                           <td
                             key={`txn-${rowIndex}-${cellIndex}`}
+                            className='finance-table-td'
+                            data-label={TRANSACTION_TABLE_HEADERS[cellIndex]}
                             style={{
                               borderBottom: '1px solid #f0f0f0',
                               padding: '8px',
