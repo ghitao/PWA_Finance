@@ -5,6 +5,24 @@ export type LocalSqliteInfo = {
   sqliteVersion: string
   tableNames: string[]
   latestTransactions: TransactionsPreview | null
+  settingsMenu: SettingsMenuValues
+}
+
+export type SettingsMenuEntry = {
+  name: string
+  description: string
+  subType: string
+  currency: string
+  boEnabled: boolean
+}
+
+export type SettingsMenuValues = {
+  accounts: SettingsMenuEntry[]
+  partner_accounts: SettingsMenuEntry[]
+  categories: SettingsMenuEntry[]
+  events: SettingsMenuEntry[]
+  incomes: SettingsMenuEntry[]
+  currencies: SettingsMenuEntry[]
 }
 
 export type TransactionsPreview = {
@@ -140,11 +158,16 @@ function normalizeDistinctValues(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))]
 }
 
-function loadAvailableValuesFromSettings(
+function toBooleanLike(value: unknown): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+
+  return ['1', 'true', 'yes', 'y', 'enabled', 'on'].includes(normalized)
+}
+
+function loadSettingsRowsByType(
   db: InstanceType<SqlJsStatic['Database']>,
   settingType: string,
-  alias: string,
-): string[] {
+): SettingsMenuEntry[] {
   const settingsTableResult = db.exec(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND lower(name) = 'settings' LIMIT 1;",
   )
@@ -163,33 +186,69 @@ function loadAvailableValuesFromSettings(
     return []
   }
 
-  const valueColumnCandidates = ['value', 'name', 'account', 'data', 'settingvalue']
-  const valueColumn =
-    valueColumnCandidates
-      .map((candidate) =>
-        settingsColumns.find((columnName) => columnName.toLowerCase() === candidate.toLowerCase()),
-      )
-      .find((columnName): columnName is string => Boolean(columnName)) ??
-    settingsColumns.find((columnName) => columnName.toLowerCase() !== 'type')
+  const pickColumn = (candidates: string[], exclude: string[] = []): string | undefined => {
+    const excluded = exclude.map((item) => item.toLowerCase())
 
-  if (!valueColumn) {
-    return []
+    return (
+      candidates
+        .map((candidate) =>
+          settingsColumns.find((columnName) => columnName.toLowerCase() === candidate.toLowerCase()),
+        )
+        .find((columnName): columnName is string => Boolean(columnName)) ??
+      settingsColumns.find((columnName) => !excluded.includes(columnName.toLowerCase()))
+    )
   }
 
-  const rawValues =
-    db.exec(
-      `SELECT DISTINCT ${quoteIdentifier(valueColumn)} AS ${quoteIdentifier(alias)} FROM ${quoteIdentifier(tableName)} WHERE lower(trim(CAST(${quoteIdentifier(typeColumn)} AS TEXT))) = ${quoteSqlString(settingType.toLowerCase())} AND ${quoteIdentifier(valueColumn)} IS NOT NULL AND TRIM(CAST(${quoteIdentifier(valueColumn)} AS TEXT)) <> '' ORDER BY ${quoteIdentifier(valueColumn)} ASC;`,
-    )[0]?.values.map((row) => String(row[0])) ?? []
+  const nameColumn = pickColumn(['name', 'value', 'account', 'data', 'settingvalue'], ['type'])
+  const descriptionColumn = pickColumn(['description', 'desc', 'details'], ['type', nameColumn ?? ''])
+  const subTypeColumn = pickColumn(['subtype', 'sub_type'], ['type', nameColumn ?? '', descriptionColumn ?? ''])
+  const currencyColumn = pickColumn(
+    ['currency', 'currenry'],
+    ['type', nameColumn ?? '', descriptionColumn ?? '', subTypeColumn ?? ''],
+  )
+  const boEnabledColumn = pickColumn(
+    ['boenabled', 'bo_enabled', 'enabled', 'isenabled'],
+    ['type', nameColumn ?? '', descriptionColumn ?? '', subTypeColumn ?? '', currencyColumn ?? ''],
+  )
 
-  return normalizeDistinctValues(rawValues)
+  const nameExpr = nameColumn ? `CAST(${quoteIdentifier(nameColumn)} AS TEXT)` : `''`
+  const descriptionExpr = descriptionColumn ? `CAST(${quoteIdentifier(descriptionColumn)} AS TEXT)` : `''`
+  const subTypeExpr = subTypeColumn ? `CAST(${quoteIdentifier(subTypeColumn)} AS TEXT)` : `''`
+  const currencyExpr = currencyColumn ? `CAST(${quoteIdentifier(currencyColumn)} AS TEXT)` : `''`
+  const boEnabledExpr = boEnabledColumn ? `CAST(${quoteIdentifier(boEnabledColumn)} AS TEXT)` : `'0'`
+
+  const result = db.exec(
+    `SELECT ${nameExpr} AS name, ${descriptionExpr} AS description, ${subTypeExpr} AS subType, ${currencyExpr} AS currency, ${boEnabledExpr} AS boEnabled FROM ${quoteIdentifier(tableName)} WHERE lower(trim(CAST(${quoteIdentifier(typeColumn)} AS TEXT))) = ${quoteSqlString(settingType.toLowerCase())} ORDER BY name ASC;`,
+  )
+
+  const rows = result[0]?.values ?? []
+
+  return rows.map((row) => ({
+    name: String(row[0] ?? '').trim(),
+    description: String(row[1] ?? '').trim(),
+    subType: String(row[2] ?? '').trim(),
+    currency: String(row[3] ?? '').trim(),
+    boEnabled: toBooleanLike(row[4]),
+  }))
 }
 
 function loadAvailableAccountsFromSettings(db: InstanceType<SqlJsStatic['Database']>): string[] {
-  return loadAvailableValuesFromSettings(db, 'accounts', 'account')
+  return normalizeDistinctValues(loadSettingsRowsByType(db, 'accounts').map((row) => row.name))
 }
 
 function loadAvailableCategoriesFromSettings(db: InstanceType<SqlJsStatic['Database']>): string[] {
-  return loadAvailableValuesFromSettings(db, 'categories', 'category')
+  return normalizeDistinctValues(loadSettingsRowsByType(db, 'categories').map((row) => row.name))
+}
+
+function loadSettingsMenuValues(db: InstanceType<SqlJsStatic['Database']>): SettingsMenuValues {
+  return {
+    accounts: loadSettingsRowsByType(db, 'accounts'),
+    partner_accounts: loadSettingsRowsByType(db, 'partner_accounts'),
+    categories: loadSettingsRowsByType(db, 'categories'),
+    events: loadSettingsRowsByType(db, 'events'),
+    incomes: loadSettingsRowsByType(db, 'incomes'),
+    currencies: loadSettingsRowsByType(db, 'currencies'),
+  }
 }
 
 function loadLatestTransactions(
@@ -447,6 +506,7 @@ export async function inspectLocalSqlite(
     )
 
     const tableNames = tableResult[0]?.values.map((row) => String(row[0])) ?? []
+    const settingsMenu = loadSettingsMenuValues(db)
     const latestTransactions = loadLatestTransactions(
       db,
       transactionsOffset,
@@ -466,6 +526,7 @@ export async function inspectLocalSqlite(
       sqliteVersion: getSingleValue(versionResult, 'necunoscuta'),
       tableNames,
       latestTransactions,
+      settingsMenu,
     }
   } finally {
     db.close()

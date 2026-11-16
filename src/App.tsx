@@ -4,6 +4,7 @@ import { inspectLocalSqlite } from './sqlite/localSqlite'
 type MenuItem = 'dashboard' | 'comenzi' | 'tranzactii' | 'setari'
 type SortColumn = 'date' | 'value'
 type SortDirection = 'asc' | 'desc'
+type SettingsSubmenuKey = 'accounts' | 'partner_accounts' | 'categories' | 'events' | 'incomes' | 'currencies'
 const TRANSACTION_TABLE_HEADERS = ['Date', 'Type', 'For', 'Description', 'Value'] as const
 const DEFAULT_TRANSACTIONS_PAGE_SIZE = 100
 const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat('ro-RO')
@@ -15,6 +16,25 @@ const VALUE_SUM_FORMATTER = new Intl.NumberFormat('ro-RO', {
 })
 
 type InspectedDbInfo = Awaited<ReturnType<typeof inspectLocalSqlite>>
+type SettingsMenuEntry = InspectedDbInfo['settingsMenu'][SettingsSubmenuKey][number]
+
+const EMPTY_SETTINGS_MENU: Record<SettingsSubmenuKey, SettingsMenuEntry[]> = {
+  accounts: [],
+  partner_accounts: [],
+  categories: [],
+  events: [],
+  incomes: [],
+  currencies: [],
+}
+
+const SETTINGS_SUBMENUS: Array<{ key: SettingsSubmenuKey; label: string }> = [
+  { key: 'accounts', label: 'Accounts' },
+  { key: 'partner_accounts', label: 'Partners' },
+  { key: 'categories', label: 'Categories' },
+  { key: 'events', label: 'Events' },
+  { key: 'incomes', label: 'Incomes' },
+  { key: 'currencies', label: 'Currencies' },
+]
 
 function parseDateValue(rawValue: string): Date | null {
   const numericValue = Number(rawValue)
@@ -59,6 +79,24 @@ function getTypeInitials(typeValue: string): string {
   }
 
   return `${words[0][0] ?? ''}${words[1][0] ?? ''}`.toUpperCase()
+}
+
+function getTypeBadgeClass(initials: string): string {
+  const normalized = initials.toUpperCase()
+
+  if (normalized === 'EX' || normalized === 'LE') {
+    return 'finance-mobile-type-badge--red'
+  }
+
+  if (normalized === 'IN' || normalized === 'LO') {
+    return 'finance-mobile-type-badge--green'
+  }
+
+  if (normalized === 'BU') {
+    return 'finance-mobile-type-badge--blue'
+  }
+
+  return ''
 }
 
 function parseDriveFileId(url: URL): string | null {
@@ -125,6 +163,9 @@ function App() {
   const [selectedTrEvent, setSelectedTrEvent] = useState('all')
   const [selectedAccount, setSelectedAccount] = useState('all')
   const [selectedCategory, setSelectedCategory] = useState('all')
+  const [settingsMenuValues, setSettingsMenuValues] = useState<Record<SettingsSubmenuKey, SettingsMenuEntry[]>>(EMPTY_SETTINGS_MENU)
+  const [selectedSettingsSubmenu, setSelectedSettingsSubmenu] = useState<SettingsSubmenuKey>('accounts')
+  const [settingsSearchInput, setSettingsSearchInput] = useState('')
   const [transactionsPageSizeInput, setTransactionsPageSizeInput] = useState(String(DEFAULT_TRANSACTIONS_PAGE_SIZE))
   const [transactionsPageSize, setTransactionsPageSize] = useState(DEFAULT_TRANSACTIONS_PAGE_SIZE)
   const [descriptionFilterInput, setDescriptionFilterInput] = useState('')
@@ -183,6 +224,18 @@ function App() {
   const activeFromDateFilter = appliedFromDate.trim().length > 0 ? appliedFromDate : undefined
   const activeToDateFilter =
     appliedFromDate.trim().length > 0 && appliedToDate.trim().length > 0 ? appliedToDate : undefined
+  const activeSettingsSubmenuLabel =
+    SETTINGS_SUBMENUS.find((submenu) => submenu.key === selectedSettingsSubmenu)?.label ?? 'Settings'
+  const activeSettingsSubmenuValues = settingsMenuValues[selectedSettingsSubmenu] ?? []
+  const normalizedSettingsSearch = settingsSearchInput.trim().toLowerCase()
+  const filteredSettingsSubmenuValues = normalizedSettingsSearch
+    ? activeSettingsSubmenuValues.filter((entry) => {
+        const searchableText = `${entry.name} ${entry.description} ${entry.subType} ${entry.currency} ${
+          entry.boEnabled ? 'enabled true da' : 'disabled false nu'
+        }`.toLowerCase()
+        return searchableText.includes(normalizedSettingsSearch)
+      })
+    : activeSettingsSubmenuValues
 
   const applyInspectedDbInfo = (dbInfo: InspectedDbInfo, file: File) => {
     setSelectedDbFile(file)
@@ -195,6 +248,7 @@ function App() {
     setAvailableTrEvents(dbInfo.latestTransactions?.availableTrEvents ?? [])
     setAvailableAccounts(dbInfo.latestTransactions?.availableAccounts ?? [])
     setAvailableCategories(dbInfo.latestTransactions?.availableCategories ?? [])
+    setSettingsMenuValues(dbInfo.settingsMenu ?? EMPTY_SETTINGS_MENU)
     setTransactionsOffset(dbInfo.latestTransactions?.offset ?? 0)
     setTransactionsTotalRows(dbInfo.latestTransactions?.totalRows ?? 0)
     setSumTrValueBase(dbInfo.latestTransactions?.sumTrValueBase ?? 0)
@@ -328,6 +382,9 @@ function App() {
     setSelectedTrEvent('all')
     setSelectedAccount('all')
     setSelectedCategory('all')
+    setSettingsMenuValues(EMPTY_SETTINGS_MENU)
+    setSelectedSettingsSubmenu('accounts')
+    setSettingsSearchInput('')
     setDescriptionFilterInput('')
     setAppliedDescriptionFilter('')
     setFromDateInput('')
@@ -361,6 +418,7 @@ function App() {
       setDbInfoMessage('Nu s-a putut citi baza selectata.')
       setDbError('Verifica daca fisierul este o baza SQLite valida (.db, .sqlite, .sqlite3).')
       setSelectedDbFile(null)
+      setSettingsMenuValues(EMPTY_SETTINGS_MENU)
       setSumTrValueBase(0)
       setSumTrValueRef(0)
       setTransactionsOffset(0)
@@ -907,6 +965,19 @@ function App() {
     } finally {
       setIsTransactionsLoading(false)
     }
+  }
+
+  const clearSettingsSearch = () => {
+    setSettingsSearchInput('')
+  }
+
+  const handleToggleSettingEnabled = (submenuKey: SettingsSubmenuKey, targetEntry: SettingsMenuEntry) => {
+    setSettingsMenuValues((previousValues) => ({
+      ...previousValues,
+      [submenuKey]: previousValues[submenuKey].map((entry) =>
+        entry === targetEntry ? { ...entry, boEnabled: !entry.boEnabled } : entry,
+      ),
+    }))
   }
 
   return (
@@ -1512,7 +1583,7 @@ function App() {
                   {transactionDisplayRows.map((row, rowIndex) => (
                     <article key={`txn-mobile-${rowIndex}`} className='finance-mobile-card'>
                       <div className='finance-mobile-card-grid'>
-                        <div className='finance-mobile-type-badge'>
+                        <div className={`finance-mobile-type-badge ${getTypeBadgeClass(row.typeInitials)}`.trim()}>
                           <span className='finance-mobile-type'>{row.typeInitials}</span>
                         </div>
                         <div className='finance-mobile-account'>{row.account || '-'}</div>
@@ -1602,7 +1673,193 @@ function App() {
             )}
           </div>
         )}
-        {activeMenu === 'setari' && <p>Setarile aplicatiei.</p>}
+        {activeMenu === 'setari' && (
+          <div style={{ display: 'grid', gap: '12px' }}>
+            <p style={{ margin: 0 }}>Setari disponibile din tabela settings (filtrate pe type).</p>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <label htmlFor='settings-search'>Search settings:</label>
+              <input
+                id='settings-search'
+                type='text'
+                value={settingsSearchInput}
+                onChange={(event) => setSettingsSearchInput(event.target.value)}
+                placeholder='Name / Description / subType / Currency'
+                style={{
+                  padding: '8px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid #ccc',
+                  minWidth: '220px',
+                }}
+              />
+              <button
+                onClick={clearSettingsSearch}
+                disabled={!settingsSearchInput}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid #ccc',
+                  background: !settingsSearchInput ? '#f2f2f2' : '#fff',
+                  cursor: !settingsSearchInput ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Reset
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              {SETTINGS_SUBMENUS.map((submenu) => (
+                <button
+                  key={submenu.key}
+                  onClick={() => setSelectedSettingsSubmenu(submenu.key)}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #ccc',
+                    background: selectedSettingsSubmenu === submenu.key ? '#e8f0ff' : '#fff',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {submenu.label}
+                </button>
+              ))}
+            </div>
+
+            <div>
+              <p style={{ margin: '0 0 8px 0', color: '#444' }}>
+                {activeSettingsSubmenuLabel} ({filteredSettingsSubmenuValues.length})
+              </p>
+
+              {filteredSettingsSubmenuValues.length === 0 ? (
+                <p style={{ margin: 0, color: '#666' }}>
+                  {activeSettingsSubmenuValues.length === 0
+                    ? `Nu exista valori pentru type = "${selectedSettingsSubmenu}".`
+                    : 'Nu exista rezultate pentru filtrul curent.'}
+                </p>
+              ) : (
+                <>
+                  <div className='settings-mobile-cards'>
+                    {filteredSettingsSubmenuValues.map((value, index) => (
+                      <article key={`${selectedSettingsSubmenu}-mobile-${index}-${value.name}`} className='settings-mobile-card'>
+                        <div className='settings-mobile-row-1'>
+                          <span className='settings-mobile-name'>{value.name || '-'}</span>
+                          <button
+                            type='button'
+                            className={`settings-switch ${value.boEnabled ? 'settings-switch--on' : 'settings-switch--off'}`}
+                            onClick={() => handleToggleSettingEnabled(selectedSettingsSubmenu, value)}
+                            aria-pressed={value.boEnabled}
+                          >
+                            <span className='settings-switch-track'>
+                              <span className='settings-switch-thumb' />
+                            </span>
+                            <span className='settings-switch-label'>
+                              {value.boEnabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                          </button>
+                        </div>
+                        <div className='settings-mobile-row-2'>{value.description || '-'}</div>
+                        <div className='settings-mobile-row-3'>
+                          <span>{value.subType || '-'}</span>
+                          <span>{value.currency || '-'}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+
+                  <div className='settings-desktop-table'>
+                    <table className='finance-table' style={{ borderCollapse: 'collapse', width: '100%' }}>
+                      <thead>
+                        <tr>
+                          {['Name', 'Description', 'subType', 'Currency', 'boEnabled'].map((columnName) => (
+                            <th
+                              key={columnName}
+                              style={{
+                                textAlign: 'left',
+                                borderBottom: '1px solid #ddd',
+                                padding: '8px',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {columnName}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredSettingsSubmenuValues.map((value, index) => (
+                          <tr key={`${selectedSettingsSubmenu}-${index}-${value.name}`}>
+                            <td
+                              style={{
+                                borderBottom: '1px solid #f0f0f0',
+                                padding: '8px',
+                                whiteSpace: 'nowrap',
+                                textAlign: 'left',
+                              }}
+                            >
+                              {value.name || '-'}
+                            </td>
+                            <td
+                              style={{
+                                borderBottom: '1px solid #f0f0f0',
+                                padding: '8px',
+                                whiteSpace: 'nowrap',
+                                textAlign: 'left',
+                              }}
+                            >
+                              {value.description || '-'}
+                            </td>
+                            <td
+                              style={{
+                                borderBottom: '1px solid #f0f0f0',
+                                padding: '8px',
+                                whiteSpace: 'nowrap',
+                                textAlign: 'left',
+                              }}
+                            >
+                              {value.subType || '-'}
+                            </td>
+                            <td
+                              style={{
+                                borderBottom: '1px solid #f0f0f0',
+                                padding: '8px',
+                                whiteSpace: 'nowrap',
+                                textAlign: 'left',
+                              }}
+                            >
+                              {value.currency || '-'}
+                            </td>
+                            <td
+                              style={{
+                                borderBottom: '1px solid #f0f0f0',
+                                padding: '8px',
+                                whiteSpace: 'nowrap',
+                                textAlign: 'left',
+                              }}
+                            >
+                              <button
+                                type='button'
+                                className={`settings-switch ${value.boEnabled ? 'settings-switch--on' : 'settings-switch--off'}`}
+                                onClick={() => handleToggleSettingEnabled(selectedSettingsSubmenu, value)}
+                                aria-pressed={value.boEnabled}
+                              >
+                                <span className='settings-switch-track'>
+                                  <span className='settings-switch-thumb' />
+                                </span>
+                                <span className='settings-switch-label'>
+                                  {value.boEnabled ? 'Enabled' : 'Disabled'}
+                                </span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </section>
     </div>
   )
