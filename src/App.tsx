@@ -7,10 +7,14 @@ type SortDirection = 'asc' | 'desc'
 const TRANSACTION_TABLE_HEADERS = ['Date', 'Type', 'For', 'Description', 'Value'] as const
 const DEFAULT_TRANSACTIONS_PAGE_SIZE = 100
 const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat('ro-RO')
+const DEFAULT_REMOTE_DB_URL = (import.meta.env.VITE_DEFAULT_DB_URL ?? '').trim()
+const DEFAULT_REMOTE_DB_NAME = (import.meta.env.VITE_DEFAULT_DB_NAME ?? 'default-drive.db').trim()
 const VALUE_SUM_FORMATTER = new Intl.NumberFormat('ro-RO', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 })
+
+type InspectedDbInfo = Awaited<ReturnType<typeof inspectLocalSqlite>>
 
 function parseDateValue(rawValue: string): Date | null {
   const numericValue = Number(rawValue)
@@ -38,6 +42,68 @@ function formatTrDateValue(rawValue: string): string {
 
 function getColumnIndex(columns: string[], target: string): number {
   return columns.findIndex((columnName) => columnName.toLowerCase() === target.toLowerCase())
+}
+
+function getTypeInitials(typeValue: string): string {
+  const words = typeValue
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+
+  if (words.length === 0) {
+    return '--'
+  }
+
+  if (words.length === 1) {
+    return words[0].slice(0, 2).toUpperCase()
+  }
+
+  return `${words[0][0] ?? ''}${words[1][0] ?? ''}`.toUpperCase()
+}
+
+function parseDriveFileId(url: URL): string | null {
+  const idFromQuery = url.searchParams.get('id')
+  if (idFromQuery) {
+    return idFromQuery
+  }
+
+  const fileMatch = url.pathname.match(/\/file\/d\/([^/]+)/)
+  if (fileMatch) {
+    return fileMatch[1]
+  }
+
+  return null
+}
+
+function resolveRemoteDbUrl(rawUrl: string): { downloadUrl: string; fileName: string } {
+  const parsedUrl = new URL(rawUrl)
+  const isDriveHost = /(^|\.)drive\.google\.com$/i.test(parsedUrl.hostname)
+
+  if (!isDriveHost) {
+    return { downloadUrl: rawUrl, fileName: DEFAULT_REMOTE_DB_NAME }
+  }
+
+  if (parsedUrl.pathname.includes('/folders/')) {
+    throw new Error('Link-ul de folder Google Drive nu poate fi incarcat direct. Foloseste un link de fisier.')
+  }
+
+  const fileId = parseDriveFileId(parsedUrl)
+  if (!fileId) {
+    throw new Error('Nu am putut detecta un fileId in link-ul Google Drive.')
+  }
+
+  return {
+    downloadUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
+    fileName: `drive-${fileId}.db`,
+  }
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message
+  }
+
+  return 'Eroare necunoscuta.'
 }
 
 function App() {
@@ -80,6 +146,7 @@ function App() {
   const hasTransactionsTable = dbTables.some((tableName) => tableName.toLowerCase() === 'transactions')
   const trDateIndex = getColumnIndex(transactionsColumns, 'trDate')
   const trTypeIndex = getColumnIndex(transactionsColumns, 'trType')
+  const trSourceIndex = getColumnIndex(transactionsColumns, 'trSource')
   const trDestinationIndex = getColumnIndex(transactionsColumns, 'trDestination')
   const trDescriptionIndex = getColumnIndex(transactionsColumns, 'trDescription')
   const trValueIndex = getColumnIndex(transactionsColumns, 'trValue')
@@ -87,6 +154,7 @@ function App() {
   const transactionDisplayRows = transactionsRows.map((row) => {
     const dateValue = trDateIndex >= 0 ? formatTrDateValue(row[trDateIndex] ?? '') : ''
     const typeValue = trTypeIndex >= 0 ? row[trTypeIndex] ?? '' : ''
+    const accountValue = trSourceIndex >= 0 ? row[trSourceIndex] ?? '' : ''
     const forValue = trDestinationIndex >= 0 ? row[trDestinationIndex] ?? '' : ''
     const descriptionValue = trDescriptionIndex >= 0 ? row[trDescriptionIndex] ?? '' : ''
     const valuePart = trValueIndex >= 0 ? row[trValueIndex] ?? '' : ''
@@ -96,6 +164,8 @@ function App() {
     return {
       date: dateValue,
       type: typeValue,
+      typeInitials: getTypeInitials(typeValue),
+      account: accountValue,
       for: forValue,
       description: descriptionValue,
       value: combinedValue,
@@ -113,6 +183,78 @@ function App() {
   const activeFromDateFilter = appliedFromDate.trim().length > 0 ? appliedFromDate : undefined
   const activeToDateFilter =
     appliedFromDate.trim().length > 0 && appliedToDate.trim().length > 0 ? appliedToDate : undefined
+
+  const applyInspectedDbInfo = (dbInfo: InspectedDbInfo, file: File) => {
+    setSelectedDbFile(file)
+    setDbFileName(file.name)
+    setDbTables(dbInfo.tableNames)
+    setTransactionsColumns(dbInfo.latestTransactions?.columns ?? [])
+    setTransactionsRows(dbInfo.latestTransactions?.rows ?? [])
+    setTransactionsOrderedBy(dbInfo.latestTransactions?.orderedBy ?? '')
+    setAvailableTrTypes(dbInfo.latestTransactions?.availableTrTypes ?? [])
+    setAvailableTrEvents(dbInfo.latestTransactions?.availableTrEvents ?? [])
+    setAvailableAccounts(dbInfo.latestTransactions?.availableAccounts ?? [])
+    setAvailableCategories(dbInfo.latestTransactions?.availableCategories ?? [])
+    setTransactionsOffset(dbInfo.latestTransactions?.offset ?? 0)
+    setTransactionsTotalRows(dbInfo.latestTransactions?.totalRows ?? 0)
+    setSumTrValueBase(dbInfo.latestTransactions?.sumTrValueBase ?? 0)
+    setSumTrValueRef(dbInfo.latestTransactions?.sumTrValueRef ?? 0)
+  }
+
+  useEffect(() => {
+    if (!DEFAULT_REMOTE_DB_URL) {
+      return
+    }
+
+    let isCancelled = false
+
+    void (async () => {
+      setIsDbLoading(true)
+      setDbError('')
+
+      try {
+        const { downloadUrl, fileName } = resolveRemoteDbUrl(DEFAULT_REMOTE_DB_URL)
+        const response = await fetch(downloadUrl, { cache: 'no-store' })
+
+        if (!response.ok) {
+          throw new Error(`Nu am putut descarca baza implicita (HTTP ${response.status}).`)
+        }
+
+        const blob = await response.blob()
+        const remoteFile = new File([blob], fileName, {
+          type: blob.type || 'application/octet-stream',
+        })
+        const dbInfo = await inspectLocalSqlite(remoteFile, {
+          transactionsOffset: 0,
+          transactionsLimit: DEFAULT_TRANSACTIONS_PAGE_SIZE,
+          transactionsSortColumn: 'date',
+          transactionsSortDirection: 'desc',
+        })
+
+        if (isCancelled) {
+          return
+        }
+
+        applyInspectedDbInfo(dbInfo, remoteFile)
+        setDbInfoMessage(`Baza implicita a fost incarcata: ${remoteFile.name}`)
+      } catch (error) {
+        if (isCancelled) {
+          return
+        }
+
+        setDbInfoMessage('Incarcarea automata a bazei implicite a esuat.')
+        setDbError(toErrorMessage(error))
+      } finally {
+        if (!isCancelled) {
+          setIsDbLoading(false)
+        }
+      }
+    })()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!isCommandsOpen) {
@@ -214,18 +356,7 @@ function App() {
       })
 
       setDbInfoMessage(`Baza deschisa cu succes. SQLite versiune: ${dbInfo.sqliteVersion}`)
-      setDbTables(dbInfo.tableNames)
-      setTransactionsColumns(dbInfo.latestTransactions?.columns ?? [])
-      setTransactionsRows(dbInfo.latestTransactions?.rows ?? [])
-      setTransactionsOrderedBy(dbInfo.latestTransactions?.orderedBy ?? '')
-      setAvailableTrTypes(dbInfo.latestTransactions?.availableTrTypes ?? [])
-      setAvailableTrEvents(dbInfo.latestTransactions?.availableTrEvents ?? [])
-      setAvailableAccounts(dbInfo.latestTransactions?.availableAccounts ?? [])
-      setAvailableCategories(dbInfo.latestTransactions?.availableCategories ?? [])
-      setTransactionsOffset(dbInfo.latestTransactions?.offset ?? 0)
-      setTransactionsTotalRows(dbInfo.latestTransactions?.totalRows ?? 0)
-      setSumTrValueBase(dbInfo.latestTransactions?.sumTrValueBase ?? 0)
-      setSumTrValueRef(dbInfo.latestTransactions?.sumTrValueRef ?? 0)
+      applyInspectedDbInfo(dbInfo, selectedFile)
     } catch {
       setDbInfoMessage('Nu s-a putut citi baza selectata.')
       setDbError('Verifica daca fisierul este o baza SQLite valida (.db, .sqlite, .sqlite3).')
@@ -659,11 +790,7 @@ function App() {
     }
   }
 
-  const handleSortClick = (column: SortColumn) => {
-    const nextSortColumn = column
-    const nextSortDirection: SortDirection =
-      sortColumn === column ? (sortDirection === 'asc' ? 'desc' : 'asc') : 'desc'
-
+  const applySqlSort = async (nextSortColumn: SortColumn, nextSortDirection: SortDirection) => {
     setSortColumn(nextSortColumn)
     setSortDirection(nextSortDirection)
 
@@ -671,43 +798,59 @@ function App() {
       return
     }
 
-    void (async () => {
-      setIsTransactionsLoading(true)
-      setDbError('')
+    setIsTransactionsLoading(true)
+    setDbError('')
 
-      try {
-        const dbInfo = await inspectLocalSqlite(selectedDbFile, {
-          transactionsOffset: 0,
-          transactionsLimit: transactionsPageSize,
-          transactionsTypeFilter: activeTrTypeFilter,
-          transactionsEventFilter: activeTrEventFilter,
-          transactionsAccountFilter: activeAccountFilter,
-          transactionsCategoryFilter: activeCategoryFilter,
-          transactionsDescriptionFilter: activeDescriptionFilter,
-          transactionsFromDate: activeFromDateFilter,
-          transactionsToDate: activeToDateFilter,
-          transactionsSortColumn: nextSortColumn,
-          transactionsSortDirection: nextSortDirection,
-        })
+    try {
+      const dbInfo = await inspectLocalSqlite(selectedDbFile, {
+        transactionsOffset: 0,
+        transactionsLimit: transactionsPageSize,
+        transactionsTypeFilter: activeTrTypeFilter,
+        transactionsEventFilter: activeTrEventFilter,
+        transactionsAccountFilter: activeAccountFilter,
+        transactionsCategoryFilter: activeCategoryFilter,
+        transactionsDescriptionFilter: activeDescriptionFilter,
+        transactionsFromDate: activeFromDateFilter,
+        transactionsToDate: activeToDateFilter,
+        transactionsSortColumn: nextSortColumn,
+        transactionsSortDirection: nextSortDirection,
+      })
 
-        setDbTables(dbInfo.tableNames)
-        setTransactionsColumns(dbInfo.latestTransactions?.columns ?? [])
-        setTransactionsRows(dbInfo.latestTransactions?.rows ?? [])
-        setTransactionsOrderedBy(dbInfo.latestTransactions?.orderedBy ?? '')
-        setAvailableTrTypes(dbInfo.latestTransactions?.availableTrTypes ?? [])
-        setAvailableTrEvents(dbInfo.latestTransactions?.availableTrEvents ?? [])
-        setAvailableAccounts(dbInfo.latestTransactions?.availableAccounts ?? [])
-        setAvailableCategories(dbInfo.latestTransactions?.availableCategories ?? [])
-        setTransactionsOffset(dbInfo.latestTransactions?.offset ?? 0)
-        setTransactionsTotalRows(dbInfo.latestTransactions?.totalRows ?? 0)
-        setSumTrValueBase(dbInfo.latestTransactions?.sumTrValueBase ?? 0)
-        setSumTrValueRef(dbInfo.latestTransactions?.sumTrValueRef ?? 0)
-      } catch {
-        setDbError('Nu s-a putut aplica sortarea SQL.')
-      } finally {
-        setIsTransactionsLoading(false)
-      }
-    })()
+      setDbTables(dbInfo.tableNames)
+      setTransactionsColumns(dbInfo.latestTransactions?.columns ?? [])
+      setTransactionsRows(dbInfo.latestTransactions?.rows ?? [])
+      setTransactionsOrderedBy(dbInfo.latestTransactions?.orderedBy ?? '')
+      setAvailableTrTypes(dbInfo.latestTransactions?.availableTrTypes ?? [])
+      setAvailableTrEvents(dbInfo.latestTransactions?.availableTrEvents ?? [])
+      setAvailableAccounts(dbInfo.latestTransactions?.availableAccounts ?? [])
+      setAvailableCategories(dbInfo.latestTransactions?.availableCategories ?? [])
+      setTransactionsOffset(dbInfo.latestTransactions?.offset ?? 0)
+      setTransactionsTotalRows(dbInfo.latestTransactions?.totalRows ?? 0)
+      setSumTrValueBase(dbInfo.latestTransactions?.sumTrValueBase ?? 0)
+      setSumTrValueRef(dbInfo.latestTransactions?.sumTrValueRef ?? 0)
+    } catch {
+      setDbError('Nu s-a putut aplica sortarea SQL.')
+    } finally {
+      setIsTransactionsLoading(false)
+    }
+  }
+
+  const handleSortClick = (column: SortColumn) => {
+    const nextSortColumn = column
+    const nextSortDirection: SortDirection =
+      sortColumn === column ? (sortDirection === 'asc' ? 'desc' : 'asc') : 'desc'
+
+    void applySqlSort(nextSortColumn, nextSortDirection)
+  }
+
+  const handleSortColumnChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const nextSortColumn = event.target.value as SortColumn
+    void applySqlSort(nextSortColumn, 'desc')
+  }
+
+  const handleSortDirectionToggle = () => {
+    const nextSortDirection: SortDirection = sortDirection === 'asc' ? 'desc' : 'asc'
+    void applySqlSort(sortColumn, nextSortDirection)
   }
 
   const applyTransactionsPageSize = async () => {
@@ -991,6 +1134,45 @@ function App() {
               <p style={{ margin: 0, color: '#444' }}>
                 Ordonare folosita: <strong>{transactionsOrderedBy}</strong> {sortDirection}
               </p>
+            )}
+
+            {dbFileName && hasTransactionsTable && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <label htmlFor='sort-column-select'>Sort:</label>
+                <select
+                  id='sort-column-select'
+                  value={sortColumn}
+                  onChange={handleSortColumnChange}
+                  disabled={isTransactionsLoading}
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid #ccc',
+                    background: isTransactionsLoading ? '#f2f2f2' : '#fff',
+                    cursor: isTransactionsLoading ? 'not-allowed' : 'pointer',
+                    color: '#111',
+                    WebkitTextFillColor: '#111',
+                    colorScheme: 'light',
+                  }}
+                >
+                  <option value='date'>Date</option>
+                  <option value='value'>Value</option>
+                </select>
+
+                <button
+                  onClick={handleSortDirectionToggle}
+                  disabled={isTransactionsLoading}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #ccc',
+                    background: isTransactionsLoading ? '#f2f2f2' : '#fff',
+                    cursor: isTransactionsLoading ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {sortDirection === 'asc' ? 'Asc ↑' : 'Desc ↓'}
+                </button>
+              </div>
             )}
 
             {dbFileName && hasTransactionsTable && availableTrTypes.length > 0 && (
@@ -1325,7 +1507,24 @@ function App() {
             )}
 
             {transactionsRows.length > 0 && (
-              <div className='finance-table-wrap' style={{ overflowX: 'auto' }}>
+              <>
+                <div className='finance-mobile-cards'>
+                  {transactionDisplayRows.map((row, rowIndex) => (
+                    <article key={`txn-mobile-${rowIndex}`} className='finance-mobile-card'>
+                      <div className='finance-mobile-card-grid'>
+                        <div className='finance-mobile-type-badge'>
+                          <span className='finance-mobile-type'>{row.typeInitials}</span>
+                        </div>
+                        <div className='finance-mobile-account'>{row.account || '-'}</div>
+                        <div className='finance-mobile-value'>{row.value || '-'}</div>
+                        <div className='finance-mobile-description'>{row.description || '-'}</div>
+                        <div className='finance-mobile-date'>{row.date || '-'}</div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+
+                <div className='finance-table-wrap finance-desktop-table' style={{ overflowX: 'auto' }}>
                 <table className='finance-table' style={{ borderCollapse: 'collapse', minWidth: '640px', width: '100%' }}>
                   <thead>
                     <tr>
@@ -1398,7 +1597,8 @@ function App() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              </>
             )}
           </div>
         )}
